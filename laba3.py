@@ -107,7 +107,10 @@ class AdminWindow(QWidget):
         if selected:
             username = selected.text().split()[0]
             users = load_users()
-            if username != "ADMIN" and username in users:
+            if username == "ADMIN":
+                QMessageBox.warning(self, "Ошибка", "Нельзя заблокировать администратора")
+                return
+            if username in users:
                 users[username]["blocked"] = True
                 save_users(users)
                 self.load_users()
@@ -118,6 +121,9 @@ class AdminWindow(QWidget):
         if selected:
             username = selected.text().split()[0]
             users = load_users()
+            if username == "ADMIN":
+                QMessageBox.warning(self, "Ошибка", "Нельзя разблокировать администратора")
+                return
             if username in users:
                 users[username]["blocked"] = False
                 save_users(users)
@@ -202,6 +208,9 @@ class AdminWindow(QWidget):
         if selected:
             username = selected.text().split()[0]
             users = load_users()
+            if username == "ADMIN":
+                QMessageBox.warning(self, "Ошибка", "Нельзя снять ограничения с администратора")
+                return
             if username in users:
                 users[username]["restrictions"] = {}
                 save_users(users)
@@ -235,42 +244,58 @@ class UserWindow(QWidget):
         self.setLayout(layout)
 
     def change_password(self):
-        """НЕ РАБОТАЮТ ОГРАНИЧЕНИЯ АДМИНА НА ПАРОЛЬ. НУЖНО ИСПРАВИТЬ"""
         users = load_users()
-        username = self.username  # Получаем имя текущего пользователя
+        username = self.username  # Имя текущего пользователя
 
-        # Шаг 1: Запрашиваем старый пароль
-        old_password, ok1 = QInputDialog.getText(self, "Сменить пароль", "Введите старый пароль:", QLineEdit.Password)
+        # Если это админ, обязательно запрашиваем старый пароль
+        if username == "ADMIN":
+            old_password, ok1 = QInputDialog.getText(self, "Сменить пароль", "Введите старый пароль:",
+                                                     QLineEdit.Password)
 
-        if ok1:
-            # Проверка старого пароля
-            if old_password == "" or hash_password(old_password) == users[username]["password"]:
-                # Шаг 2: Запрашиваем новый пароль
-                new_password, ok2 = QInputDialog.getText(self, "Сменить пароль", "Введите новый пароль:",
+            if ok1 and old_password:
+                if hash_password(old_password) != users[username]["password"]:
+                    QMessageBox.warning(self, "Ошибка", "Неверный старый пароль")
+                    return
+            else:
+                return
+
+        # Шаг 2: Запрашиваем новый пароль
+        new_password, ok2 = QInputDialog.getText(self, "Сменить пароль", "Введите новый пароль:", QLineEdit.Password)
+
+        if ok2 and new_password:
+            # Шаг 3: Проверка на ограничения (используем ограничения из данных пользователя)
+            errors = []
+            if users[username]["restrictions"]:
+                restrictions = users[username]["restrictions"]
+
+                # Проверка длины пароля
+                min_length = restrictions.get("min_length", 6)
+                if len(new_password) < min_length:
+                    errors.append(f"Пароль должен быть не короче {min_length} символов")
+
+                # Проверка политики пароля
+                policy = restrictions.get("policy", "Все символы")
+                policy_regex = PASSWORD_POLICIES.get(policy)
+                if policy_regex and not re.match(policy_regex, new_password):
+                    errors.append(f"Пароль должен соответствовать политике: {policy}")
+
+            # Если есть ошибки, выводим их
+            if errors:
+                QMessageBox.warning(self, "Ошибка", "\n".join(errors))
+                return
+
+            # Шаг 4: Подтверждение нового пароля
+            confirm_password, ok3 = QInputDialog.getText(self, "Подтверждение пароля", "Подтвердите новый пароль:",
                                                          QLineEdit.Password)
 
-                if ok2 and new_password:
-                    # Шаг 3: Проверка на ограничения (если они есть)
-                    if users[username]["restrictions"]:
-                        min_length = 6  # Пример ограничения на минимальную длину пароля
-                        if len(new_password) < min_length:
-                            QMessageBox.warning(self, "Ошибка", f"Пароль должен быть не короче {min_length} символов")
-                            return
-
-                    # Шаг 4: Подтверждение нового пароля
-                    confirm_password, ok3 = QInputDialog.getText(self, "Подтверждение пароля",
-                                                                 "Подтвердите новый пароль:", QLineEdit.Password)
-
-                    if ok3 and new_password == confirm_password:
-                        users[username]["password"] = hash_password(new_password)
-                        save_users(users)
-                        QMessageBox.information(self, "Успех", "Пароль изменен")
-                    else:
-                        QMessageBox.warning(self, "Ошибка", "Пароли не совпадают")
-                else:
-                    QMessageBox.warning(self, "Ошибка", "Пароль не может быть пустым")
+            if ok3 and new_password == confirm_password:
+                users[username]["password"] = hash_password(new_password)
+                save_users(users)
+                QMessageBox.information(self, "Успех", "Пароль изменен")
             else:
-                QMessageBox.warning(self, "Ошибка", "Неверный старый пароль")
+                QMessageBox.warning(self, "Ошибка", "Пароли не совпадают")
+        else:
+            QMessageBox.warning(self, "Ошибка", "Пароль не может быть пустым")
 
     def logout(self):
         self.close()  # Закрываем окно пользователя
