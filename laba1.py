@@ -54,13 +54,13 @@ def print_results(password: str, alphabet_size: int, speed: float, max_attempts:
 
 
 def main():
-    speed = 1000000
-    max_attempts = 100
-    delay = 0
+    speed = 10
+    max_attempts = 13
+    delay = 10
 
     # Генерируем пароли для разных мощностей алфавита
     for alphabet_size in [10, 26, 36, 95]:
-        password_length = random.randint(6, 12)  # Длина пароля случайным образом между 6 и 12 символами
+        password_length = random.randint(1, 1)  # Длина пароля случайным образом между 6 и 12 символами
         password = generate_password(password_length, alphabet_size)
         print_results(password, alphabet_size, speed, max_attempts, delay)
 
