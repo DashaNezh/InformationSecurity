@@ -12,7 +12,7 @@ PASSWORD_POLICIES = {
     "Буквы и цифры": r"^[A-Za-z0-9]+$",
     "Все символы": r"^.*$",
     "Только буквы": r"^[A-Za-z]+$",
-    "Одна заглавная буква": r"^[A-Z]{1}$",
+    "Одна заглавная буква": r"^[^A-Z]*[A-Z][^A-Z]*$",
     "Без простых паролей": None  # Проверка будет по списку
 }
 
@@ -26,7 +26,7 @@ def hash_password(password):
 def load_users():
     # Проверка на наличие файла пользователей
     try:
-        with open(USERS_FILE, "r") as file:
+        with open(USERS_FILE, "r", encoding='utf-8') as file:
             return json.load(file)
     except FileNotFoundError:
         # Если файл не найден, создаем файл с админом и пустым паролем
@@ -36,23 +36,8 @@ def load_users():
 
 
 def save_users(users):
-    with open(USERS_FILE, "w") as file:
-        json.dump(users, file, indent=4)
-
-
-def validate_password(password, restrictions):
-    if "min_length" in restrictions and len(password) < restrictions["min_length"]:
-        return False, "Пароль слишком короткий"
-
-    if "policy" in restrictions and restrictions["policy"] in PASSWORD_POLICIES:
-        policy = PASSWORD_POLICIES[restrictions["policy"]]
-        if policy and not re.match(policy, password):
-            return False, "Пароль не соответствует требованиям"
-
-    if "policy" in restrictions and restrictions["policy"] == "Без простых паролей" and password in SIMPLE_PASSWORDS:
-        return False, "Пароль слишком простой"
-
-    return True, ""
+    with open(USERS_FILE, "w", encoding='utf-8') as file:
+        json.dump(users, file, ensure_ascii=False, indent=4)
 
 
 class AdminWindow(QWidget):
@@ -175,7 +160,7 @@ class AdminWindow(QWidget):
                 min_length_input = QSpinBox()
                 min_length_input.setMinimum(1)
                 min_length_input.setValue(users[username].get("restrictions", {}).get("min_length", 6))
-
+                # установка ограничений на пароль
                 policy_label = QLabel("Политика пароля:")
                 policy_input = QComboBox()
                 policy_input.addItems(PASSWORD_POLICIES.keys())
@@ -247,17 +232,21 @@ class UserWindow(QWidget):
         users = load_users()
         username = self.username  # Имя текущего пользователя
 
-        # Если это админ, обязательно запрашиваем старый пароль
-        if username == "ADMIN":
-            old_password, ok1 = QInputDialog.getText(self, "Сменить пароль", "Введите старый пароль:",
-                                                     QLineEdit.Password)
+        # Шаг 1: Запрашиваем старый пароль
+        old_password, ok1 = QInputDialog.getText(self, "Сменить пароль", "Введите старый пароль:", QLineEdit.Password)
 
-            if ok1 and old_password:
-                if hash_password(old_password) != users[username]["password"]:
-                    QMessageBox.warning(self, "Ошибка", "Неверный старый пароль")
-                    return
-            else:
+        # Если старый пароль пустой, считаем его как введённый, пропускаем проверку
+        if not old_password:
+            old_password = None
+            ok1 = True
+
+        if ok1 and old_password is not None:
+            # Проверяем, совпадает ли старый пароль с текущим в базе данных
+            if hash_password(old_password) != users[username]["password"]:
+                QMessageBox.warning(self, "Ошибка", "Неверный старый пароль")
                 return
+        elif old_password is not None:
+            return
 
         # Шаг 2: Запрашиваем новый пароль
         new_password, ok2 = QInputDialog.getText(self, "Сменить пароль", "Введите новый пароль:", QLineEdit.Password)
@@ -265,15 +254,20 @@ class UserWindow(QWidget):
         if ok2 and new_password:
             # Шаг 3: Проверка на ограничения (используем ограничения из данных пользователя)
             errors = []
+
             if users[username]["restrictions"]:
                 restrictions = users[username]["restrictions"]
 
-                # Проверка длины пароля
-                min_length = restrictions.get("min_length", 6)
+                # Проверка минимальной длины пароля
+                min_length = restrictions.get("min_length", 8)  # По умолчанию 8 символов, если не указано
                 if len(new_password) < min_length:
-                    errors.append(f"Пароль должен быть не короче {min_length} символов")
+                    errors.append(f"Пароль должен содержать не менее {min_length} символов.")
 
-                # Проверка политики пароля
+                # Проверка на использование простого пароля
+                if new_password in SIMPLE_PASSWORDS:
+                    errors.append("Этот пароль слишком простой, выберите другой.")
+
+                # Проверка политики пароля (если она есть)
                 policy = restrictions.get("policy", "Все символы")
                 policy_regex = PASSWORD_POLICIES.get(policy)
                 if policy_regex and not re.match(policy_regex, new_password):
@@ -289,6 +283,7 @@ class UserWindow(QWidget):
                                                          QLineEdit.Password)
 
             if ok3 and new_password == confirm_password:
+                # Если все хорошо, обновляем пароль
                 users[username]["password"] = hash_password(new_password)
                 save_users(users)
                 QMessageBox.information(self, "Успех", "Пароль изменен")
