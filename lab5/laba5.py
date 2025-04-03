@@ -1,13 +1,12 @@
 import sys
 import json
 import hashlib
-import re
 import time
 import string
 import requests
 from itertools import product
-from multiprocessing import Pool, cpu_count
 from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton,
                                QMessageBox, QDialog, QListWidget, QHBoxLayout, QInputDialog,
                                QComboBox, QSpinBox, QTextEdit, QTabWidget)
@@ -102,6 +101,7 @@ class PasswordCracker(QObject):
     password_found = Signal(str, str, float)  # русское слово, пароль, время
     dictionary_loaded = Signal(int)
     speed_updated = Signal(int)  # Новый сигнал для обновления скорости
+    attempt_made = Signal()
 
     def __init__(self, target_hash, max_length=6):
         super().__init__()
@@ -156,6 +156,7 @@ class PasswordCracker(QObject):
             if not self._is_running:
                 self.cleanup_workers()
                 return
+            self.attempt_made.emit()
             if hash_password(pwd) == self.target_hash:
                 self.password_found.emit("", pwd, time.time() - start_time)
                 self.cleanup_workers()
@@ -167,6 +168,7 @@ class PasswordCracker(QObject):
             if not self._is_running:
                 self.cleanup_workers()
                 return
+            self.attempt_made.emit()
             if hash_password(word) == self.target_hash:
                 self.password_found.emit("", word, time.time() - start_time)
                 self.cleanup_workers()
@@ -178,6 +180,7 @@ class PasswordCracker(QObject):
             if not self._is_running:
                 self.cleanup_workers()
                 return
+            self.attempt_made.emit()
             if hash_password(russian_word) == self.target_hash:
                 self.password_found.emit(russian_word, russian_word, time.time() - start_time)
                 self.cleanup_workers()
@@ -494,14 +497,18 @@ class PasswordAnalysisWindow(QWidget):
         self.cracker.moveToThread(self.cracker_thread)
 
         # Подключаем сигналы
+        self.cracker.attempt_made.connect(self.cracker.count_attempt, Qt.ConnectionType.QueuedConnection)  # Важно!
         self.cracker.speed_updated.connect(self.update_speed_display)
-        self.cracker_thread.started.connect(self.cracker.run)
+        self.cracker.password_found.connect(
+            lambda r, p, t: QTimer.singleShot(0, lambda: self.on_password_found(r, p, t)),
+            Qt.ConnectionType.QueuedConnection
+        )
+        self.cracker.dictionary_loaded.connect(self.update_dictionary_info)
+        self.cracker.progress.connect(self.update_progress)
         self.cracker.finished.connect(self.cracker_thread.quit)
         self.cracker.finished.connect(self.on_attack_finished)
-        self.cracker.progress.connect(self.update_progress)
-        self.cracker.password_found.connect(self.on_password_found)
-        self.cracker.dictionary_loaded.connect(self.update_dictionary_info)
 
+        self.cracker_thread.started.connect(self.cracker.run)
         self.cracker_thread.start()
 
     def update_speed_display(self, speed):
