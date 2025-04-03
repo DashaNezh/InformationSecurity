@@ -272,12 +272,21 @@ class BruteForceWorker(QObject):
                 if not self._is_running:
                     break
 
+                attempt_str = ''.join(attempt)
                 self.attempt_made.emit()  # Отправляем сигнал о попытке
 
                 if hash_password(''.join(attempt)) == self.target_hash:
                     if self._is_running:  # Проверка перед отправкой сигнала
                         self.password_found.emit(''.join(attempt))
                     break
+
+                # Проверяем преобразованную комбинацию (русская → латинская раскладка)
+                converted_attempt = ''.join([RUS_TO_LAT.get(c.lower(), c) for c in attempt_str])
+                if converted_attempt != attempt_str:  # Если есть разница
+                    if hash_password(converted_attempt) == self.target_hash:
+                        if self._is_running:
+                            self.password_found.emit(converted_attempt)
+                        break
         except Exception as e:
             print(f"Worker error: {e}")
         finally:
