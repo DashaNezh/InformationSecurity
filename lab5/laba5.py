@@ -197,12 +197,12 @@ class PasswordCracker(QObject):
 
             self.progress.emit(f"🔢 Проверяем комбинации длины {length}...")
 
-            worker = BruteForceWorker(self.target_hash, alphabet, length)
-            thread = QThread()
-            worker.moveToThread(thread)
+            worker = BruteForceWorker(self.target_hash, alphabet, length) # Создаем worker
+            thread = QThread()  # Создаем поток
+            worker.moveToThread(thread)  # Переносим worker в поток
 
             # Подключаем сигналы
-            thread.started.connect(worker.run)
+            thread.started.connect(worker.run)  # Запускаем worker.run()
             worker.finished.connect(thread.quit)
             worker.finished.connect(worker.deleteLater)
             thread.finished.connect(thread.deleteLater)
@@ -215,7 +215,7 @@ class PasswordCracker(QObject):
                 self.stop()
             ))
 
-            thread.start()
+            thread.start()  # Старт потока
             self.workers.append(worker)
             self.threads.append(thread)
 
