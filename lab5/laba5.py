@@ -6,6 +6,8 @@ import time
 import string
 import requests
 from itertools import product
+from multiprocessing import Pool, cpu_count
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton,
                                QMessageBox, QDialog, QListWidget, QHBoxLayout, QInputDialog,
                                QComboBox, QSpinBox, QTextEdit, QTabWidget)
@@ -55,15 +57,6 @@ def download_russian_words(url="https://raw.githubusercontent.com/danakt/russian
         return ["пароль", "привет", "админ", "qwerty"]  # Fallback-словарь
 
 
-def generate_password_dictionary(russian_words):
-    """Переводит русские слова в латинскую раскладку."""
-    dictionary = {}
-    for word in russian_words:
-        translated = ''.join([RUS_TO_LAT.get(char.lower(), char) for char in word])
-        dictionary[word] = translated
-    return dictionary
-
-
 # --- Функции для оценки надежности ---
 def calculate_combinations(password_length: int, alphabet_power: int) -> int:
     return alphabet_power ** password_length
@@ -88,18 +81,18 @@ def format_time(seconds: int) -> str:
 
 def get_alphabet_power(password: str) -> int:
     has_digit = any(c.isdigit() for c in password)
-    has_lower = any(c.islower() for c in password)
-    has_upper = any(c.isupper() for c in password)
+    has_lower = any(c.islower() for c in password) and any(c in 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя' for c in password.lower())
+    has_upper = any(c.isupper() for c in password) and any(c in 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ' for c in password.upper())
     has_special = any(not c.isalnum() for c in password)
 
     if has_special:
-        return 95
+        return 95  # Все возможные символы
     elif has_digit and (has_lower or has_upper):
-        return 36
+        return 33 + 10  # 33 русские буквы + цифры
     elif has_lower or has_upper:
-        return 26
+        return 33  # Только русские буквы
     else:
-        return 10
+        return 10  # Только цифры
 
 
 # --- Класс для работы в отдельном потоке ---
@@ -115,6 +108,10 @@ class PasswordCracker(QObject):
         self.max_length = max_length
         self._is_running = True
         self.password_dictionary = {}
+        self.workers = []  # Будем хранить словари с worker и thread
+        self.threads = []  # Отдельный список для потоков
+
+
 
     def load_dictionary(self):
         """Загружает и генерирует словарь паролей."""
@@ -124,46 +121,141 @@ class PasswordCracker(QObject):
         except FileNotFoundError:
             russian_words = download_russian_words()
 
-        self.password_dictionary = generate_password_dictionary(russian_words)
+        self.password_dictionary = {word: ''.join([RUS_TO_LAT.get(char.lower(), char)
+                                                   for char in word])
+                                    for word in russian_words}
         self.dictionary_loaded.emit(len(self.password_dictionary))
 
     def run(self):
-        """Основной метод подбора пароля."""
         self.load_dictionary()
-
-        # Подбор по словарю
-        for russian_word, latin_word in self.password_dictionary.items():
-            if not self._is_running:
-                return
-
-            if hash_password(latin_word) == self.target_hash:
-                self.password_found.emit(russian_word, latin_word, 0)
-                self.finished.emit()
-                return
-            self.progress.emit(f"Проверен: {russian_word} -> {latin_word}")
-
-        # Brute-force с русскими буквами
-        self.progress.emit("Словарный подбор не удался. Запуск brute-force...")
         start_time = time.time()
-        alphabet = string.ascii_lowercase + string.digits + 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя'
 
+        # 1. Проверка простых паролей
+        self.progress.emit("🔍 Проверка простых паролей...")
+        for pwd in ["123456", "password", "admin", "qwerty", "12345", "123456789"]:
+            if not self._is_running:
+                self.cleanup_workers()
+                return
+            if hash_password(pwd) == self.target_hash:
+                self.password_found.emit("", pwd, time.time() - start_time)
+                self.cleanup_workers()
+                return
+
+        # 2. Словарная атака
+        self.progress.emit("📚 Словарная атака...")
+        for word in self.password_dictionary.values():
+            if not self._is_running:
+                self.cleanup_workers()
+                return
+            if hash_password(word) == self.target_hash:
+                self.password_found.emit("", word, time.time() - start_time)
+                self.cleanup_workers()
+                return
+
+        # 3. Проверка русских слов как есть
+        self.progress.emit("🔠 Проверка русских слов...")
+        for russian_word in self.password_dictionary:
+            if not self._is_running:
+                self.cleanup_workers()
+                return
+            if hash_password(russian_word) == self.target_hash:
+                self.password_found.emit(russian_word, russian_word, time.time() - start_time)
+                self.cleanup_workers()
+                return
+
+        # 4. Brute-force атака
+        self.progress.emit("⚡ Запускаем brute-force...")
+        alphabet = 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя' + \
+                   'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ' + \
+                   string.digits + '!@#$%'
+
+        # Создаем worker'ов для каждой длины
         for length in range(1, self.max_length + 1):
             if not self._is_running:
+                self.cleanup_workers()
                 return
-            self.progress.emit(f"Проверяем длину {length}...")
-            for attempt in product(alphabet, repeat=length):
-                if not self._is_running:
-                    return
-                attempt = ''.join(attempt)
-                if hash_password(attempt) == self.target_hash:
-                    self.password_found.emit("", attempt, time.time() - start_time)
-                    self.finished.emit()
-                    return
-        self.progress.emit("Пароль не найден. Увеличьте max_length.")
-        self.finished.emit()
+
+            self.progress.emit(f"🔢 Проверяем комбинации длины {length}...")
+
+            worker = BruteForceWorker(self.target_hash, alphabet, length)
+            thread = QThread()
+            worker.moveToThread(thread)
+
+            # Подключаем сигналы
+            thread.started.connect(worker.run)
+            worker.finished.connect(thread.quit)
+            worker.finished.connect(worker.deleteLater)
+            thread.finished.connect(thread.deleteLater)
+
+            # Обработчик найденного пароля
+            worker.password_found.connect(lambda pwd, st=start_time: (
+                self.password_found.emit("", pwd, time.time() - st),
+                self.stop()
+            ))
+
+            thread.start()
+            self.workers.append(worker)
+            self.threads.append(thread)
+
+        # Ждем завершения всех потоков
+        for thread in self.threads:
+            thread.wait()
+
+        if self._is_running:  # Если не было найдено и не было остановки
+            self.progress.emit("❌ Пароль не найден")
+            self.finished.emit()
+
+    def cleanup_workers(self):
+        """Останавливает и очищает все рабочие потоки"""
+        self._is_running = False  # Устанавливаем флаг первым делом
+
+        # Останавливаем все потоки
+        for thread in self.threads:
+            try:
+                thread.quit()
+                thread.wait(500)
+            except Exception as e:
+                print(f"Error stopping thread: {e}")
+
+        # Очищаем списки
+        self.workers = []
+        self.threads = []
 
     def stop(self):
         self._is_running = False
+        self.cleanup_workers()
+        self.progress.emit("🛑 Подбор принудительно остановлен")
+
+
+class BruteForceWorker(QObject):
+    finished = Signal()
+    password_found = Signal(str)
+
+    def __init__(self, target_hash, alphabet, length):
+        super().__init__()
+        self.target_hash = target_hash
+        self.alphabet = alphabet
+        self.length = length
+        self._is_running = True
+
+    def run(self):
+        try:
+            for attempt in product(self.alphabet, repeat=self.length):
+                if not self._is_running:
+                    break
+
+                if hash_password(''.join(attempt)) == self.target_hash:
+                    if self._is_running:  # Проверка перед отправкой сигнала
+                        self.password_found.emit(''.join(attempt))
+                    break
+        except Exception as e:
+            print(f"Worker error: {e}")
+        finally:
+            self.finished.emit()
+
+    def stop(self):
+        self._is_running = False
+
 
 # --- Класс админ-панели ---
 class AdminWindow(QWidget):
@@ -205,14 +297,14 @@ class AdminWindow(QWidget):
 
         # Запрос нового пароля
         new_password, ok = QInputDialog.getText(
-            self, "Смена пароля", "Введите новый пароль (мин. 8 символов):", QLineEdit.Password
+            self, "Смена пароля", "Введите новый пароль (мин. 4 символа):", QLineEdit.Password
         )
         if not ok or not new_password:
             return
 
         # Проверка длины
-        if len(new_password) < 8:
-            QMessageBox.warning(self, "Ошибка", "Пароль должен содержать минимум 8 символов!")
+        if len(new_password) < 4:
+            QMessageBox.warning(self, "Ошибка", "Пароль должен содержать минимум 4 символа!")
             return
 
         # Подтверждение пароля
@@ -227,6 +319,7 @@ class AdminWindow(QWidget):
         users["ADMIN"]["password"] = hash_password(new_password)
         save_users(users)
         QMessageBox.information(self, "Успех", "Пароль ADMIN успешно изменен!")
+
 
 # --- Класс анализа паролей ---
 class PasswordAnalysisWindow(QWidget):
@@ -273,6 +366,30 @@ class PasswordAnalysisWindow(QWidget):
         layout.addWidget(self.check_button)
         layout.addWidget(self.result_display)
         self.tab1.setLayout(layout)
+
+    def check_password_strength(self):
+        password = self.password_input.text()
+        if not password:
+            QMessageBox.warning(self, "Ошибка", "Введите пароль для анализа!")
+            return
+
+        alphabet_power = get_alphabet_power(password)
+        crack_time, combinations = calculate_crack_time(len(password), alphabet_power)
+
+        result = [
+            f"Анализ пароля: {password}",
+            f"Длина: {len(password)} символов",
+            f"Мощность алфавита: {alphabet_power}",
+            f"Возможных комбинаций: {combinations:,}",
+            f"Примерное время перебора: {format_time(int(crack_time))}"
+        ]
+
+        if password.lower() in SIMPLE_PASSWORDS:
+            result.append("\n⚠ Внимание: пароль слишком простой!")
+        elif len(password) < 8:
+            result.append("\n⚠ Внимание: рекомендуется длина от 8 символов!")
+
+        self.result_display.setText("\n".join(result))
 
     def setup_tab2(self):
         layout = QVBoxLayout()
@@ -350,18 +467,28 @@ class PasswordAnalysisWindow(QWidget):
         self.attack_progress.append("Подбор пароля остановлен")
         self.on_attack_finished()
 
-    def update_progress(self, message):
-        self.attack_progress.append(message)
-
     def update_dictionary_info(self, count):
         self.dictionary_info.setText(f"Словарь: {count} слов")
 
     def on_password_found(self, russian_word, password, time_taken):
-        if russian_word:
-            msg = f"Пароль найден: '{password}' (исходное слово: '{russian_word}')"
-        else:
-            msg = f"Пароль взломан: '{password}' (время: {time_taken:.2f} сек)"
-        self.attack_progress.append(msg)
+        try:
+            if not self.cracker:
+                return
+
+            msg = f"✅ Пароль {'найден' if russian_word else 'взломан'}!\n"
+            if russian_word:
+                msg += f"Слово: '{russian_word}'\n"
+            msg += f"Пароль: '{password}'\n"
+            msg += f"Время: {time_taken:.2f} сек\n"
+            self.attack_progress.append(msg)
+            self.attack_progress.append("=" * 40)
+        except Exception as e:
+            print(f"Error displaying password: {e}")
+
+    def update_progress(self, message):
+        # Очищаем предыдущие сообщения о прогрессе, оставляя только итоговые
+        if "🔍" in message or "📚" in message or "⚡" in message or "🔢" in message:
+            self.attack_progress.append(message)
 
     def on_attack_finished(self):
         self.start_attack_button.setEnabled(True)
@@ -376,7 +503,7 @@ class PasswordAnalysisWindow(QWidget):
         super().closeEvent(event)
 
 
-# --- Главное окно (остается без изменений) ---
+# --- Главное окно  ---
 class LoginWindow(QWidget):
     def __init__(self):
         super().__init__()
