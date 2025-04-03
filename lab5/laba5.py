@@ -101,6 +101,7 @@ class PasswordCracker(QObject):
     progress = Signal(str)
     password_found = Signal(str, str, float)  # русское слово, пароль, время
     dictionary_loaded = Signal(int)
+    speed_updated = Signal(int)  # Новый сигнал для обновления скорости
 
     def __init__(self, target_hash, max_length=6):
         super().__init__()
@@ -111,6 +112,25 @@ class PasswordCracker(QObject):
         self.workers = []  # Будем хранить словари с worker и thread
         self.threads = []  # Отдельный список для потоков
 
+        # Добавляем счетчики для скорости
+        self.total_attempts = 0
+        self.last_update_time = time.time()
+        self.last_attempts = 0
+
+        # Таймер для обновления скорости
+        self.speed_timer = QTimer()
+        self.speed_timer.timeout.connect(self.update_speed)
+        self.speed_timer.start(1000)  # Обновляем каждую секунду
+
+    def update_speed(self):
+        """Вычисляет и отправляет текущую скорость"""
+        current_time = time.time()
+        elapsed = current_time - self.last_update_time
+        if elapsed > 0:
+            speed = int((self.total_attempts - self.last_attempts) / elapsed)
+            self.speed_updated.emit(speed)
+            self.last_update_time = current_time
+            self.last_attempts = self.total_attempts
 
 
     def load_dictionary(self):
@@ -187,6 +207,8 @@ class PasswordCracker(QObject):
             worker.finished.connect(worker.deleteLater)
             thread.finished.connect(thread.deleteLater)
 
+            worker.attempt_made.connect(self.count_attempt)
+
             # Обработчик найденного пароля
             worker.password_found.connect(lambda pwd, st=start_time: (
                 self.password_found.emit("", pwd, time.time() - st),
@@ -205,9 +227,14 @@ class PasswordCracker(QObject):
             self.progress.emit("❌ Пароль не найден")
             self.finished.emit()
 
+    def count_attempt(self):
+        """Увеличивает счетчик попыток"""
+        self.total_attempts += 1
+
     def cleanup_workers(self):
         """Останавливает и очищает все рабочие потоки"""
         self._is_running = False  # Устанавливаем флаг первым делом
+        self.speed_timer.stop()  # Останавливаем таймер
 
         # Останавливаем все потоки
         for thread in self.threads:
@@ -230,6 +257,7 @@ class PasswordCracker(QObject):
 class BruteForceWorker(QObject):
     finished = Signal()
     password_found = Signal(str)
+    attempt_made = Signal()  # Новый сигнал о каждой попытке
 
     def __init__(self, target_hash, alphabet, length):
         super().__init__()
@@ -243,6 +271,8 @@ class BruteForceWorker(QObject):
             for attempt in product(self.alphabet, repeat=self.length):
                 if not self._is_running:
                     break
+
+                self.attempt_made.emit()  # Отправляем сигнал о попытке
 
                 if hash_password(''.join(attempt)) == self.target_hash:
                     if self._is_running:  # Проверка перед отправкой сигнала
@@ -410,6 +440,9 @@ class PasswordAnalysisWindow(QWidget):
         settings_layout.addWidget(self.max_length_spin)
         settings_layout.addWidget(self.dictionary_info)
 
+        self.speed_label = QLabel("Скорость: 0 попыток/сек")
+        layout.addWidget(self.speed_label)
+
         # Кнопки
         self.start_attack_button = QPushButton("Начать подбор")
         self.start_attack_button.clicked.connect(self.start_attack)
@@ -452,6 +485,7 @@ class PasswordAnalysisWindow(QWidget):
         self.cracker.moveToThread(self.cracker_thread)
 
         # Подключаем сигналы
+        self.cracker.speed_updated.connect(self.update_speed_display)
         self.cracker_thread.started.connect(self.cracker.run)
         self.cracker.finished.connect(self.cracker_thread.quit)
         self.cracker.finished.connect(self.on_attack_finished)
@@ -460,6 +494,11 @@ class PasswordAnalysisWindow(QWidget):
         self.cracker.dictionary_loaded.connect(self.update_dictionary_info)
 
         self.cracker_thread.start()
+
+    def update_speed_display(self, speed):
+        """Обновляет отображение скорости"""
+        self.speed_label.setText(f"Скорость: {speed:,} попыток/сек")
+        QApplication.processEvents()  # Принудительно обновляем интерфейс
 
     def stop_attack(self):
         if self.cracker:
