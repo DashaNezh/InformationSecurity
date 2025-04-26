@@ -6,8 +6,7 @@ from PySide6.QtWidgets import QApplication
 from laba3 import LoginWindow
 from unittest.mock import patch
 
-
-# ✅ Функции оценки стойкости с учетом русского алфавита
+# Функции оценки стойкости
 def calculate_combinations(password_length: int, alphabet_power: int) -> int:
     """Вычисляет количество возможных комбинаций пароля"""
     return alphabet_power ** password_length
@@ -74,27 +73,25 @@ def print_strength_results(password: str, speed: float, max_attempts: int, delay
     print(f"Ожидаемое время взлома: {format_time(int(total_time))}")
 
 
-# ⚙️ Qt Init
+# Qt Init
 app = QApplication(sys.argv)
 
-# 🎯 Цель
+# Цель
 target_user = "DASHA"
 login_win = LoginWindow()
 
-# 🔠 Русский алфавит и символы
+# Русский алфавит
 russian_lower = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
 russian_upper = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
-default_charset = russian_lower + russian_upper + string.digits + string.punctuation
+default_charset = russian_lower + russian_upper + string.digits
 
-
-# 📦 Генератор полного перебора
+# Генератор полного перебора
 def generate_passwords(charset, max_length):
     for length in range(1, max_length + 1):
         for password in itertools.product(charset, repeat=length):
             yield ''.join(password)
 
-
-# 📘 Загрузка словаря из файла
+# Загрузка словаря из файла
 def load_dictionary(filename):
     try:
         with open(filename, "r", encoding="utf-8") as f:
@@ -102,12 +99,8 @@ def load_dictionary(filename):
     except FileNotFoundError:
         print(f"[!] Файл {filename} не найден.")
         return []
-    except UnicodeDecodeError:
-        print(f"[!] Ошибка кодировки файла {filename}. Убедитесь, что файл в UTF-8.")
-        return []
 
-
-# 🚀 Выбор режима
+# Выбор режима
 mode = input("Выберите режим (dictionary/full): ").strip().lower()
 if mode == "dictionary":
     passwords = load_dictionary("russian_words.txt")
@@ -123,17 +116,27 @@ found_password = None
 print("[INFO] Начинаем перебор...")
 
 start_time = time.time()
+max_attempts = 10  # Параметры для оценки надежности
+delay = 0  # Задержка в секундах
 
 with patch("laba3.QMessageBox.information") as mock_info, \
-        patch("laba3.QMessageBox.warning") as mock_warn:
+     patch("laba3.QMessageBox.warning") as mock_warn:
+
     for idx, password in enumerate(passwords, 1):
         login_win.username_input.setText(target_user)
         login_win.password_input.setText(password)
         login_win.login()
 
+        # Текущая скорость перебора
         elapsed = time.time() - start_time
         speed = idx / elapsed if elapsed > 0 else 0
-        print(f"[{idx}] Пробуем: {password} | Скорость: {speed:.2f} паролей/сек", end="\r")
+
+        # Расчет скорости по надежности
+        alphabet_size = len(set(password))  # Мощность алфавита текущего пароля
+        password_length = len(password)
+        crack_time, total_combinations = calculate_crack_time(password_length, alphabet_size, speed, max_attempts, delay)
+        strength_speed = total_combinations / elapsed if elapsed > 0 else float('inf')
+        formatted_time = format_time(int(crack_time))
 
         if mock_info.called:
             args = mock_info.call_args[0]
@@ -148,13 +151,14 @@ with patch("laba3.QMessageBox.information") as mock_info, \
 # 🧾 Финальная статистика
 elapsed = time.time() - start_time
 speed = idx / elapsed if elapsed > 0 else 0
+strength_speed = total_combinations / elapsed if elapsed > 0 else float('inf')
 if not found_password:
     print("\n[-] Пароль не найден.")
-print(f"[📊] Попыток: {idx} | Время: {elapsed:.2f} сек | Средняя скорость: {speed:.2f} паролей/сек")
+print(f"\n[📊] Попыток: {idx} | Время: {elapsed:.2f} сек | Средняя скорость: {strength_speed:.2f} паролей/сек")
 
 # 🔐 Оценка стойкости найденного пароля
 if found_password:
-    print_strength_results(found_password, speed, max_attempts=10, delay=2)
+    print_strength_results(found_password, speed, max_attempts=10, delay=0)
 
 # Выход из приложения
 sys.exit(app.exec())

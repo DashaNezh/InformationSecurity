@@ -1,307 +1,454 @@
-import base64
-import os
-import tempfile
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-from PIL import Image, ImageTk
-import qrcode
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.backends import default_backend
+from tkinter import filedialog, messagebox
 from PyPDF2 import PdfReader, PdfWriter
-import binascii
-
-# Конфигурация
-SALT = b'salt_123'
-ITERATIONS = 100_000
+from PyPDF2.generic import NameObject, DecodedStreamObject
+import re
 
 
-class PDFSteganographer:
-    def __init__(self, password):
-        self.password = password
-        self.key = self._generate_key(password)
-
-    def _generate_key(self, password):
-        """Генерация ключа на основе пароля."""
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=SALT,
-            iterations=ITERATIONS,
-            backend=default_backend()
-        )
-        key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
-        return Fernet(key)
-
-    def hide_data(self, input_pdf, output_pdf, secret_message):
-        """Упрощенная функция скрытия данных в метаданных."""
-        try:
-            # Шифруем сообщение
-            encrypted_msg = self.key.encrypt(secret_message.eЫncode())
-
-            # Читаем PDF
-            reader = PdfReader(input_pdf)
-            writer = PdfWriter()
-
-            # Копируем все страницы
-            for page in reader.pages:
-                writer.add_page(page)
-
-            # Добавляем зашифрованные данные в метаданные
-            writer.add_metadata({
-                '/Creator': 'PDF Steganography',
-                '/HiddenData': binascii.hexlify(encrypted_msg).decode()
-            })
-
-            # Сохраняем PDF с паролем
-            with open(output_pdf, 'wb') as f:
-                writer.encrypt(self.password, use_128bit=True)
-                writer.write(f)
-
-            return True
-        except Exception as e:
-            print(f"Ошибка при скрытии данных: {str(e)}")
-            return False
-
-    def extract_data(self, secret_pdf):
-        """Извлечение данных с обработкой Base64 ключа."""
-        try:
-            reader = PdfReader(secret_pdf)
-            if reader.is_encrypted:
-                reader.decrypt(self.password)
-
-            # Проверяем метаданные
-            if hasattr(reader, 'metadata') and reader.metadata:
-                encrypted_hex = reader.metadata.get('/HiddenData', '')
-                if encrypted_hex:
-                    encrypted_msg = binascii.unhexlify(encrypted_hex)
-
-                    # Декодируем Base64 ключ при извлечении
-                    if hasattr(self.key, '_signing_key'):
-                        key_b64 = base64.b64encode(self.key._signing_key).decode('ascii')
-                        return f"Ключ: {key_b64}\nСообщение: {self.key.decrypt(encrypted_msg).decode()}"
-
-                    return self.key.decrypt(encrypted_msg).decode()
-
-            return "❌ Скрытые данные не найдены"
-        except Exception as e:
-            return f"❌ Ошибка при извлечении: {str(e)}"
-
-    def _generate_qrcode(self):
-        """Генерация QR-кода с ключом в Base64."""
-        try:
-            # Получаем бинарные данные ключа
-            key_bytes = self.key._signing_key
-
-            # Кодируем в Base64 для безопасного представления
-            key_b64 = base64.b64encode(key_bytes).decode('ascii')
-
-            # Создаем QR-код
-            qr = qrcode.QRCode(
-                version=1,
-                error_correction=qrcode.constants.ERROR_CORRECT_L,
-                box_size=10,
-                border=4,
-            )
-            qr.add_data(key_b64)
-            qr.make(fit=True)
-
-            # Создаем временный файл
-            temp_dir = tempfile.gettempdir()
-            qr_path = os.path.join(temp_dir, f"pdf_steg_qr_{os.getpid()}.png")
-
-            # Сохраняем изображение
-            img = qr.make_image(fill_color="black", back_color="white")
-            img.save(qr_path)
-
-            return qr_path
-
-        except Exception as e:
-            print(f"[Ошибка генерации QR] {type(e).__name__}: {str(e)}")
-            return None
-
-class SteganographyApp:
+class PdfSteganoApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("PDF Steganography Pro")
-        self.root.geometry("700x600")
+        self.root.title("PDF Стеганография")
 
-        # Стиль
-        self.style = ttk.Style()
-        self.style.configure("TButton", padding=6, font=("Arial", 10))
-        self.style.configure("TLabel", font=("Arial", 11))
+        self.input_pdf_path = tk.StringVar()
+        self.output_pdf_path = tk.StringVar()
+        self.message_text = tk.StringVar()
+        self.mode = tk.IntVar(value=1)
+        self.method = tk.StringVar(value="spacing")
 
-        # Переменные
-        self.input_pdf_var = tk.StringVar()
-        self.output_pdf_var = tk.StringVar()
-        self.password_var = tk.StringVar()
-        self.message_var = tk.StringVar()
-
-        # GUI элементы
         self.create_widgets()
 
     def create_widgets(self):
-        # Фрейм для ввода
-        input_frame = ttk.LabelFrame(self.root, text="Параметры", padding=10)
-        input_frame.pack(pady=10, padx=10, fill="x")
+        mode_frame = tk.LabelFrame(self.root, text="Режим работы", padx=5, pady=5)
+        mode_frame.pack(padx=10, pady=5, fill="x")
 
-        # Поля ввода
-        ttk.Label(input_frame, text="Исходный PDF:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(input_frame, textvariable=self.input_pdf_var, width=40).grid(row=0, column=1)
-        ttk.Button(input_frame, text="Обзор", command=self.browse_input).grid(row=0, column=2)
+        tk.Radiobutton(mode_frame, text="Зашифровать сообщение", variable=self.mode, value=1,
+                       command=self.toggle_mode).pack(anchor="w")
+        tk.Radiobutton(mode_frame, text="Расшифровать сообщение", variable=self.mode, value=2,
+                       command=self.toggle_mode).pack(anchor="w")
 
-        ttk.Label(input_frame, text="Выходной PDF:").grid(row=1, column=0, sticky="w")
-        ttk.Entry(input_frame, textvariable=self.output_pdf_var, width=40).grid(row=1, column=1)
-        ttk.Button(input_frame, text="Обзор", command=self.browse_output).grid(row=1, column=2)
+        method_frame = tk.LabelFrame(self.root, text="Метод шифрования", padx=5, pady=5)
+        method_frame.pack(padx=10, pady=5, fill="x")
 
-        ttk.Label(input_frame, text="Пароль:").grid(row=2, column=0, sticky="w")
-        ttk.Entry(input_frame, textvariable=self.password_var, show="*", width=40).grid(row=2, column=1)
+        tk.Radiobutton(method_frame, text="Межсимвольные интервалы", variable=self.method, value="spacing",
+                       command=self.toggle_mode).pack(anchor="w")
+        tk.Radiobutton(method_frame, text="Цвет текста", variable=self.method, value="color",
+                       command=self.toggle_mode).pack(anchor="w")
 
-        ttk.Label(input_frame, text="Сообщение:").grid(row=3, column=0, sticky="w")
-        ttk.Entry(input_frame, textvariable=self.message_var, width=40).grid(row=3, column=1)
+        input_frame = tk.LabelFrame(self.root, text="Исходный PDF", padx=5, pady=5)
+        input_frame.pack(padx=10, pady=5, fill="x")
 
-        # Кнопки действий
-        btn_frame = ttk.Frame(self.root)
-        btn_frame.pack(pady=10)
+        tk.Entry(input_frame, textvariable=self.input_pdf_path, width=50).pack(side="left", padx=5)
+        tk.Button(input_frame, text="Обзор", command=self.browse_input_pdf).pack(side="left")
 
-        ttk.Button(btn_frame, text="Спрятать данные", command=self.hide_data).grid(row=0, column=0, padx=5)
-        ttk.Button(btn_frame, text="Извлечь данные", command=self.extract_data).grid(row=0, column=1, padx=5)
+        self.message_frame = tk.LabelFrame(self.root, text="Сообщение", padx=5, pady=5)
+        self.message_frame.pack(padx=10, pady=5, fill="x")
 
-        # Область для QR-кода
-        self.qr_frame = ttk.LabelFrame(self.root, text="Ключ для расшифровки", padding=10)
-        self.qr_frame.pack(pady=10, fill="both", expand=True)
+        tk.Entry(self.message_frame, textvariable=self.message_text, width=50).pack(side="left", padx=5)
 
-        # Статус бар
-        self.status_var = tk.StringVar()
-        self.status_var.set("Готов к работе")
-        ttk.Label(self.root, textvariable=self.status_var, relief="sunken", anchor="w").pack(fill="x", padx=10, pady=5)
+        self.output_frame = tk.LabelFrame(self.root, text="Куда сохранить PDF", padx=5, pady=5)
+        self.output_frame.pack(padx=10, pady=5, fill="x")
 
-    def browse_input(self):
+        tk.Entry(self.output_frame, textvariable=self.output_pdf_path, width=50).pack(side="left", padx=5)
+        tk.Button(self.output_frame, text="Обзор", command=self.browse_output_pdf).pack(side="left")
+
+        self.execute_button = tk.Button(self.root, text="Выполнить", command=self.execute)
+        self.execute_button.pack(pady=5)
+
+        # Кнопка для анализа вместимости
+        tk.Button(self.root, text="Анализ вместимости", command=self.analyze_capacity).pack(pady=5)
+
+        self.toggle_mode()
+
+    def toggle_mode(self):
+        if self.mode.get() == 1:
+            self.message_frame.pack()
+            self.output_frame.pack()
+            self.execute_button.config(text="Зашифровать и сохранить")
+        else:
+            self.message_frame.pack_forget()
+            self.output_frame.pack_forget()
+            self.execute_button.config(text="Расшифровать сообщение")
+
+    def browse_input_pdf(self):
         filename = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
         if filename:
-            self.input_pdf_var.set(filename)
+            self.input_pdf_path.set(filename)
 
-    def browse_output(self):
+    def browse_output_pdf(self):
         filename = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
         if filename:
-            self.output_pdf_var.set(filename)
+            self.output_pdf_path.set(filename)
 
-    def hide_data(self):
-        if not all([self.input_pdf_var.get(), self.output_pdf_var.get(),
-                    self.password_var.get(), self.message_var.get()]):
+    def execute(self):
+        if self.mode.get() == 1:
+            if self.method.get() == "spacing":
+                self.encode_message_spacing()
+            else:
+                self.encode_message_color()
+        else:
+            if self.method.get() == "spacing":
+                self.decode_message_spacing()
+            else:
+                self.decode_message_color()
+
+    # Анализ вместимости
+    def analyze_capacity(self):
+        input_pdf = self.input_pdf_path.get()
+
+        if not input_pdf:
+            messagebox.showerror("Ошибка", "Выберите PDF файл для анализа!")
+            return
+
+        try:
+            reader = PdfReader(input_pdf)
+
+            # Анализ для метода с межсимвольными интервалами
+            spacing_capacity = 0
+            for page_num, page in enumerate(reader.pages):
+                if '/Contents' in page:
+                    contents = page['/Contents']
+                    content_bytes = self._get_content_bytes(contents)
+                    content_str = self._safe_decode(content_bytes)
+
+                    print(f"[DEBUG] Анализ страницы {page_num + 1} для метода 'Межсимвольные интервалы'...")
+                    for match in re.finditer(r'\[\s*(?:(?:\(.*?\)|<[^>]*>|-?\d*\.?\d+)[^\]]*?)*\]\s*TJ', content_str):
+                        tj_content = match.group(0)
+                        if re.match(r'^\[\s*\(\d+\)\s*\]\s*TJ$', tj_content.strip()):
+                            print(f"[DEBUG] Пропущен TJ-оператор (текст): {tj_content}")
+                            continue
+                        numbers = re.findall(r'(?<![\w<])-?\d*\.?\d+(?![\w>])', tj_content)
+                        for num_str in numbers:
+                            try:
+                                number = float(num_str)
+                                if abs(number) >= 1:
+                                    spacing_capacity += 1
+                                    print(f"[DEBUG] Число {num_str} подходит для встраивания")
+                            except ValueError:
+                                print(f"[DEBUG] Пропущено нечисловое значение: {num_str}")
+
+            # Анализ для метода с цветом текста
+            color_capacity = 0
+            for page_num, page in enumerate(reader.pages):
+                if '/Contents' in page:
+                    contents = page['/Contents']
+                    content_bytes = self._get_content_bytes(contents)
+                    content_str = self._safe_decode(content_bytes)
+
+                    print(f"[DEBUG] Анализ страницы {page_num + 1} для метода 'Цвет текста'...")
+                    color_capacity += len(list(re.finditer(
+                        r'(\[(?:\([^\)]*\)|<[^>]*>)[^\]]*\]\s*TJ|\([^\)]*\)\s*Tj)',
+                        content_str
+                    )))
+                    print(f"[DEBUG] Найдено {color_capacity} TJ/Tj-операторов на странице {page_num + 1}")
+
+            # Вычисление максимальной длины сообщения (в символах)
+            # 1 символ = 8 бит, плюс 8 бит для завершающего '\x00'
+            spacing_chars = (spacing_capacity - 8) // 8 if spacing_capacity >= 8 else 0
+            color_chars = (color_capacity - 8) // 8 if color_capacity >= 8 else 0
+
+            # Вывод результата
+            result = (
+                f"Вместимость PDF:\n\n"
+                f"Метод 'Межсимвольные интервалы':\n"
+                f" - Всего бит: {spacing_capacity}\n"
+                f" - Максимальная длина сообщения: {spacing_chars} символов\n\n"
+                f"Метод 'Цвет текста':\n"
+                f" - Всего бит: {color_capacity}\n"
+                f" - Максимальная длина сообщения: {color_chars} символов"
+            )
+            messagebox.showinfo("Результат анализа", result)
+
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка при анализе: {str(e)}")
+
+    # Метод 1: Шифрование через межсимвольные интервалы
+    def encode_message_spacing(self):
+        input_pdf = self.input_pdf_path.get()
+        output_pdf = self.output_pdf_path.get()
+        message = self.message_text.get()
+
+        if not all([input_pdf, output_pdf, message]):
             messagebox.showerror("Ошибка", "Заполните все поля!")
             return
 
         try:
-            stego = PDFSteganographer(self.password_var.get())
-            if stego.hide_data(self.input_pdf_var.get(),
-                               self.output_pdf_var.get(),
-                               self.message_var.get()):
-                self.status_var.set("✅ Данные успешно скрыты!")
+            binary_msg = ''.join(format(ord(c), '08b') for c in message) + '00000000'
+            print(f"[DEBUG] Бинарное сообщение: {binary_msg}")
+            reader = PdfReader(input_pdf)
+            writer = PdfWriter()
+            bit_index = 0
 
-                # Генерируем и показываем QR-код
-                qr_path = stego._generate_qrcode()
-                if qr_path:
-                    # Сохраняем путь к QR-коду как атрибут класса
-                    self.current_qr_path = qr_path
-                    self.show_qrcode(qr_path)
-                else:
-                    messagebox.showwarning("Внимание", "QR-код не был создан")
+            for page in reader.pages:
+                if '/Contents' in page:
+                    contents = page['/Contents']
+                    content_obj = contents.get_object()
+                    content_data = self._safe_decode(content_obj.get_data())
+                    print("[DEBUG] Содержимое страницы:\n", content_data[:1000])
+
+                    def process_tj(match):
+                        nonlocal bit_index
+                        tj_content = match.group(0)
+
+                        if re.match(r'^\[\s*\(\d+\)\s*\]\s*TJ$', tj_content.strip()):
+                            print(f"[DEBUG] Пропущен TJ-оператор (текст): {tj_content}")
+                            return tj_content
+
+                        def modify_spacing(number_match):
+                            nonlocal bit_index
+                            if bit_index < len(binary_msg):
+                                number_str = number_match.group(0)
+                                try:
+                                    number = float(number_str)
+                                    if abs(number) < 1:
+                                        return number_str
+                                    bit = binary_msg[bit_index]
+                                    delta = 0.0001
+                                    new_number = number + delta if bit == '0' else number - delta
+                                    bit_index += 1
+                                    print(f"[DEBUG] Число {number_str} -> {new_number:.4f} (бит {bit})")
+                                    return f"{new_number:.4f}"
+                                except ValueError:
+                                    return number_str
+                            return number_match.group(0)
+
+                        modified_tj = re.sub(r'(?<![\w<])(-?\d*\.?\d+)(?![\w>])', modify_spacing, tj_content)
+                        return modified_tj
+
+                    modified_data = re.sub(
+                        r'\[\s*(?:(?:\(.*?\)|<[^>]*>|-?\d*\.?\d+)[^\]]*?)*\]\s*TJ',
+                        process_tj,
+                        content_data
+                    )
+
+                    while bit_index < len(binary_msg):
+                        def add_stego_number(match):
+                            nonlocal bit_index
+                            tj_content = match.group(0)
+                            if re.match(r'^\[\s*\(\d+\)\s*\]\s*TJ$', tj_content.strip()):
+                                print(f"[DEBUG] Пропущен TJ-оператор (текст) при добавлении: {tj_content}")
+                                return tj_content
+                            if bit_index < len(binary_msg):
+                                bit = binary_msg[bit_index]
+                                delta = 0.0001
+                                stego_number = 0.0 + delta if bit == '0' else 0.0 - delta
+                                bit_index += 1
+                                modified_tj = tj_content[:-3] + f" {stego_number:.4f}] TJ"
+                                print(f"[DEBUG] Вставлено число {stego_number:.4f} (бит {bit})")
+                                return modified_tj
+                            return tj_content
+
+                        modified_data = re.sub(
+                            r'\[\s*(?:(?:\(.*?\)|<[^>]*>|-?\d*\.?\d+)[^\]]*?)*\]\s*TJ',
+                            add_stego_number,
+                            modified_data,
+                            count=1
+                        )
+
+                    print(f"[DEBUG] Всего вставлено бит: {bit_index}")
+
+                    new_stream = DecodedStreamObject()
+                    new_stream.set_data(modified_data.encode('latin-1'))
+                    page[NameObject('/Contents')] = new_stream
+
+                writer.add_page(page)
+
+            if bit_index < len(binary_msg):
+                messagebox.showwarning("Предупреждение", "Недостаточно чисел в TJ-операторах для полного сообщения!")
             else:
-                messagebox.showerror("Ошибка", "Не удалось скрыть данные")
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось спрятать данные: {str(e)}")
+                messagebox.showinfo("Успех", "Сообщение зашифровано в межсимвольные интервалы!")
 
-    def extract_data(self):
-        if not all([self.input_pdf_var.get(), self.password_var.get()]):
-            messagebox.showerror("Ошибка", "Укажите PDF и пароль!")
+            with open(output_pdf, 'wb') as f:
+                writer.write(f)
+
+            print(f"[DEBUG] Всего вставлено бит: {bit_index}")
+
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка при шифровании: {str(e)}")
+
+    # Метод 1: Дешифрование через межсимвольные интервалы
+    def decode_message_spacing(self):
+        input_pdf = self.input_pdf_path.get()
+
+        if not input_pdf:
+            messagebox.showerror("Ошибка", "Выберите PDF файл!")
             return
 
         try:
-            stego = PDFSteganographer(self.password_var.get())
-            result = stego.extract_data(self.input_pdf_var.get())
+            binary_msg = []
+            reader = PdfReader(input_pdf)
 
-            if result.startswith("❌"):
-                messagebox.showerror("Ошибка", result)
-            else:
-                messagebox.showinfo("Результат", f"Извлеченные данные:\n\n{result}")
-                self.status_var.set("🔍 Данные извлечены!")
+            for page_num, page in enumerate(reader.pages):
+                if '/Contents' in page:
+                    contents = page['/Contents']
+                    content_bytes = self._get_content_bytes(contents)
+                    content_str = self._safe_decode(content_bytes)
+
+                    print(f"[DEBUG] Страница {page_num + 1}: поиск чисел в TJ...")
+                    for match in re.finditer(r'\[\s*(?:(?:\(.*?\)|<[^>]*>|-?\d*\.?\d+)[^\]]*?)*\]\s*TJ', content_str):
+                        tj_content = match.group(0)
+                        if re.match(r'^\[\s*\(\d+\)\s*\]\s*TJ$', tj_content.strip()):
+                            print(f"[DEBUG] Пропущен TJ-оператор (текст) при декодировании: {tj_content}")
+                            continue
+                        numbers = re.findall(r'(?<![\w<])-?\d*\.?\d+(?![\w>])', tj_content)
+                        for num_str in numbers:
+                            try:
+                                number = float(num_str)
+                                rounded = round(number * 100) / 100
+                                delta = 0.0001
+                                if number > rounded + delta / 2:
+                                    binary_msg.append('0')
+                                    print(f"[DEBUG] Число {num_str}, округлено до {rounded}, бит: 0")
+                                elif number < rounded - delta / 2:
+                                    binary_msg.append('1')
+                                    print(f"[DEBUG] Число {num_str}, округлено до {rounded}, бит: 1")
+                            except ValueError:
+                                print(f"[DEBUG] Пропущено нечисловое значение: {num_str}")
+
+            message = []
+            for i in range(0, len(binary_msg), 8):
+                byte = binary_msg[i:i + 8]
+                if len(byte) == 8:
+                    char = chr(int(''.join(byte), 2))
+                    if char == '\x00':
+                        break
+                    message.append(char)
+
+            result = ''.join(message)
+            print(f"[DEBUG] Декодированное сообщение: {result}")
+            messagebox.showinfo("Результат", f"Сообщение: {result}")
+
         except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось извлечь данные: {str(e)}")
+            messagebox.showerror("Ошибка", f"Ошибка при расшифровке: {str(e)}")
 
-    def show_qrcode(self, path):
-        """Улучшенное отображение QR-кода с сохранением файла."""
+    # Метод 2: Шифрование через цвет текста
+    def encode_message_color(self):
+        input_pdf = self.input_pdf_path.get()
+        output_pdf = self.output_pdf_path.get()
+        message = self.message_text.get()
+
+        if not all([input_pdf, output_pdf, message]):
+            messagebox.showerror("Ошибка", "Заполните все поля!")
+            return
+
         try:
-            # Очищаем предыдущий QR-код
-            for widget in self.qr_frame.winfo_children():
-                widget.destroy()
+            binary_msg = ''.join(format(ord(c), '08b') for c in message) + '00000000'
+            print(f"[DEBUG] Бинарное сообщение: {binary_msg}")
+            reader = PdfReader(input_pdf)
+            writer = PdfWriter()
+            bit_index = 0
 
-            # Проверяем существование файла
-            if not os.path.exists(path):
-                raise FileNotFoundError(f"Файл {path} не найден")
+            for page in reader.pages:
+                if '/Contents' in page:
+                    contents = page['/Contents']
+                    content_obj = contents.get_object()
+                    content_data = self._safe_decode(content_obj.get_data())
+                    print("[DEBUG] Содержимое страницы:\n", content_data[:1000])
 
-            # Загружаем изображение
-            img = Image.open(path)
-            if not img:
-                raise ValueError("Не удалось загрузить изображение")
+                    def insert_color(match):
+                        nonlocal bit_index
+                        if bit_index < len(binary_msg):
+                            bit = binary_msg[bit_index]
+                            bit_index += 1
+                            color = '0 0 0 rg\n' if bit == '0' else '0.01 0 0 rg\n'
+                            print(f"[DEBUG] Вставка цвета для бита {bit}: {color.strip()}")
+                            return color + match.group(0)
+                        return match.group(0)
 
-            # Масштабируем
-            max_size = (300, 300)
-            img.thumbnail(max_size, Image.LANCZOS)
+                    modified_data = re.sub(
+                        r'(\[(?:\([^\)]*\)|<[^>]*>)[^\]]*\]\s*TJ|\([^\)]*\)\s*Tj)',
+                        insert_color,
+                        content_data
+                    )
+                    print(f"[DEBUG] Всего вставлено бит: {bit_index}")
 
-            # Конвертируем для Tkinter
-            photo = ImageTk.PhotoImage(img)
+                    new_stream = DecodedStreamObject()
+                    new_stream.set_data(modified_data.encode('latin-1'))
+                    page[NameObject('/Contents')] = new_stream
 
-            # Создаем элементы интерфейса
-            label = ttk.Label(self.qr_frame, image=photo)
-            label.image = photo  # сохраняем ссылку
-            label.pack(pady=5)
+                writer.add_page(page)
 
-            # Добавляем текст-описание
-            ttk.Label(
-                self.qr_frame,
-                text="Сохраните этот QR-код для расшифровки",
-                font=('Arial', 9)
-            ).pack()
+            with open(output_pdf, 'wb') as f:
+                writer.write(f)
 
-            # Кнопка сохранения
-            ttk.Button(
-                self.qr_frame,
-                text="Сохранить QR-код",
-                command=lambda: self.save_qrcode_image(path)
-            ).pack(pady=5)
+            print(f"[DEBUG] Всего вставлено бит: {bit_index}")
+            messagebox.showinfo("Успех", "Сообщение зашифровано в цвет текста!")
 
         except Exception as e:
-            error_msg = f"Ошибка отображения QR-кода: {str(e)}"
-            ttk.Label(
-                self.qr_frame,
-                text=error_msg,
-                foreground='red'
-            ).pack()
-            print(error_msg)
+            messagebox.showerror("Ошибка", f"Ошибка при шифровании: {str(e)}")
 
-    def save_qrcode_image(self, source_path):
-        """Сохранение QR-кода с проверкой существования файла."""
+    # Метод 2: Дешифрование через цвет текста
+    def decode_message_color(self):
+        input_pdf = self.input_pdf_path.get()
+
+        if not input_pdf:
+            messagebox.showerror("Ошибка", "Выберите PDF файл!")
+            return
+
         try:
-            if not os.path.exists(source_path):
-                raise FileNotFoundError("Исходный файл QR-кода не найден")
+            binary_msg = []
+            reader = PdfReader(input_pdf)
 
-            dest_path = filedialog.asksaveasfilename(
-                defaultextension=".png",
-                filetypes=[("PNG files", "*.png"), ("All files", "*.*")],
-                title="Сохранить QR-код как..."
-            )
+            for page_num, page in enumerate(reader.pages):
+                if '/Contents' in page:
+                    contents = page['/Contents']
+                    content_bytes = self._get_content_bytes(contents)
+                    content_str = self._safe_decode(content_bytes)
 
-            if dest_path:
-                import shutil
-                shutil.copy(source_path, dest_path)
-                messagebox.showinfo("Успех", f"QR-код сохранен в:\n{dest_path}")
+                    print(f"[DEBUG] Страница {page_num + 1}: поиск цветовых команд...")
+                    for match in re.finditer(r'(\d+(?:\.\d+)? \d+(?:\.\d+)? \d+(?:\.\d+)?) rg', content_str):
+                        color_str = match.group(1)
+                        print(f"[DEBUG] Найден цвет: {color_str}")
+                        try:
+                            r, g, b = map(float, color_str.split())
+                            if r == 0.0 and g == 0.0 and b == 0.0:
+                                binary_msg.append('0')
+                            elif r >= 0.01 and g == 0.0 and b == 0.0:
+                                binary_msg.append('1')
+                        except ValueError as e:
+                            print(f"[DEBUG] Ошибка преобразования цвета: {color_str}, {e}")
+
+            message = []
+            for i in range(0, len(binary_msg), 8):
+                byte = binary_msg[i:i + 8]
+                if len(byte) == 8:
+                    char = chr(int(''.join(byte), 2))
+                    if char == '\x00':
+                        break
+                    message.append(char)
+
+            result = ''.join(message)
+            print(f"[DEBUG] Декодированное сообщение: {result}")
+            messagebox.showinfo("Результат", f"Сообщение: {result}")
 
         except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось сохранить QR-код: {str(e)}")
+            messagebox.showerror("Ошибка", f"Ошибка при расшифровке: {str(e)}")
+
+    def _get_content_bytes(self, contents):
+        if isinstance(contents, list):
+            return b''.join([self._get_single_content(x) for x in contents])
+        return self._get_single_content(contents)
+
+    def _get_single_content(self, content):
+        if hasattr(content, 'get_data'):
+            return content.get_data()
+        elif isinstance(content, (bytes, bytearray)):
+            return content
+        elif isinstance(content, str):
+            return content.encode('latin-1', errors='replace')
+        return bytes(content)
+
+    def _safe_decode(self, content_bytes):
+        encodings = ['utf-8', 'latin-1', 'cp1252', 'ascii']
+        for encoding in encodings:
+            try:
+                return content_bytes.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return content_bytes.decode('latin-1', errors='replace')
+
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = SteganographyApp(root)
+    app = PdfSteganoApp(root)
     root.mainloop()
